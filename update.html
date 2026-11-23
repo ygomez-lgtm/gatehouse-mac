@@ -1,0 +1,604 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Gatehouse Mac Updater</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0f17;
+      --card: #131a26;
+      --border: #243047;
+      --text: #e6edf7;
+      --muted: #93a4bd;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+      --err: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .card {
+      width: 100%;
+      max-width: 680px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 28px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+    }
+    h1 { margin: 0 0 6px; font-size: 24px; letter-spacing: 0.2px; }
+    .sub { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
+    .banner {
+      padding: 12px 14px;
+      border-radius: 10px;
+      font-size: 14px;
+      margin-bottom: 18px;
+      border: 1px solid var(--border);
+      background: #0f1623;
+      line-height: 1.45;
+    }
+    .banner.ok   { border-color: rgba(34, 197, 94, 0.45); background: rgba(34, 197, 94, 0.1); }
+    .banner.warn { border-color: rgba(245, 158, 11, 0.5); background: rgba(245, 158, 11, 0.12); }
+    .banner.err  { border-color: rgba(239, 68, 68, 0.5); background: rgba(239, 68, 68, 0.12); }
+    .row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+    button {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: #1b2538;
+      color: var(--text);
+      padding: 11px 16px;
+      border-radius: 9px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button:hover:not(:disabled) { filter: brightness(1.08); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .meta {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    .stat {
+      background: #0f1623;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+    .stat .k { font-size: 11px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.6px; }
+    .stat .v { font-size: 14px; font-weight: 600; margin-top: 4px; word-break: break-word; }
+    pre {
+      margin: 0;
+      padding: 14px;
+      background: #080c13;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      color: #c9d6ea;
+      max-height: 260px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Gatehouse Mac Updater</h1>
+    <p class="sub">Verifies signed releases from <code>gatehouse-feed</code> and patches your local <code>Gatehouse_4.6.1</code> folder directly.</p>
+
+    <div id="browserWarn" class="banner warn" style="display:none;">
+      <strong>Open this page in Chrome or Edge.</strong> Safari and Firefox block direct folder patching. Copy this link and paste it into Chrome or Edge:
+      <div style="margin-top:10px;"><button id="copyBtn" type="button">Copy Updater Link</button></div>
+    </div>
+
+    <div id="statusBox" class="banner">Select your <code>Gatehouse_4.6.1</code> folder once to check and apply updates.</div>
+
+    <div class="meta">
+      <div class="stat"><div class="k">Target Folder</div><div class="v" id="folderVal">Not selected</div></div>
+      <div class="stat"><div class="k">Installed Sequence</div><div class="v" id="seqVal">Unknown</div></div>
+    </div>
+
+    <div class="row">
+      <button id="updateBtn" class="primary" type="button" disabled>Check &amp; Apply Updates</button>
+      <button id="pickBtn" type="button">Select Gatehouse Folder</button>
+    </div>
+
+    <pre id="log">Ready.</pre>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const FEED_ORIGIN = "https://ygomez-lgtm.github.io/gatehouse-feed";
+      const BASE_HASH = "0e01a7b5f0d4187d86b16c202b8b56fc37d5fbced7cbf1997c92a44fc3d288cd";
+      const STATE_FILE = ".gatehouse-mac-state.json";
+      const PREFIX = "Gatehouse_4.6.1/";
+      const MAX_BYTES = 16 * 1024 * 1024;
+      const MAX_MEMBERS = 32;
+      const APPROVED_AUDIO = /^Study_Music\/audio\/[A-Za-z0-9_][A-Za-z0-9_.-]{0,74}\.mp3$/;
+      const PUB_JWK = {
+        kty: "RSA",
+        n: "vn3Rd2MfHtP1GFaJCUh12lCrHtp15VS9SPQumimy4Qz5mgYjKI9mnxQn4fHJXSfJEamsTxGmqtzl1O4chKiL-bygt_iu6uFzcCbI2YlXGs9wwHS22CIA22nU5f9E4_itY6Ww1T6U1m6xk_AmJzEUBhNo9tm-Xckcq-4UEAn-w8zeU5fuDxiCh8XyFCbWpHIrDO5J9uJQbKBCUQ5JvXdeIaeIiGpAbaggVZ6Q8wJ0GnzV-etczKkKOwNVyilc9xspzLJYbdnYh_hpz9TwrA5SAVzOEnjr8QiVL42KA947xYktS3SK8Xjoq8CzbbmfGgO-4y2O175lgncXyPK6vXR3EQ",
+        e: "AQAB",
+        alg: "RS256",
+        ext: true
+      };
+
+      const el = {
+        browserWarn: document.getElementById("browserWarn"),
+        copyBtn: document.getElementById("copyBtn"),
+        statusBox: document.getElementById("statusBox"),
+        folderVal: document.getElementById("folderVal"),
+        seqVal: document.getElementById("seqVal"),
+        updateBtn: document.getElementById("updateBtn"),
+        pickBtn: document.getElementById("pickBtn"),
+        log: document.getElementById("log")
+      };
+
+      let savedHandle = null;
+      let pubKeyPromise = null;
+
+      function setStatus(msg, cls = "") {
+        el.statusBox.className = "banner" + (cls ? " " + cls : "");
+        el.statusBox.textContent = msg;
+      }
+
+      function addLog(msg) {
+        const ts = new Date().toLocaleTimeString();
+        el.log.textContent += "\n[" + ts + "] " + msg;
+        el.log.scrollTop = el.log.scrollHeight;
+      }
+
+      function resetLog(msg) {
+        const ts = new Date().toLocaleTimeString();
+        el.log.textContent = "[" + ts + "] " + msg;
+      }
+
+      // IndexedDB persistence for the chosen Gatehouse_4.6.1 directory handle
+      function openDb() {
+        return new Promise((resolve, reject) => {
+          const req = indexedDB.open("GatehouseMacUpdaterDB", 1);
+          req.onupgradeneeded = () => req.result.createObjectStore("handles");
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+      }
+
+      async function saveHandle(handle) {
+        const db = await openDb();
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction("handles", "readwrite");
+          tx.objectStore("handles").put(handle, "gameDir");
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      }
+
+      async function loadHandle() {
+        const db = await openDb();
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction("handles", "readonly");
+          const req = tx.objectStore("handles").get("gameDir");
+          req.onsuccess = () => resolve(req.result || null);
+          req.onerror = () => reject(req.error);
+        });
+      }
+
+      function b64ToBytes(b64) {
+        const bin = atob(b64);
+        const out = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+        return out;
+      }
+
+      async function sha256Hex(bytes) {
+        const hash = await crypto.subtle.digest("SHA-256", bytes.slice());
+        return Array.from(new Uint8Array(hash))
+          .map(b => b.toString(16).padStart(2, "0"))
+          .join("");
+      }
+
+      async function getPublicKey() {
+        if (!pubKeyPromise) {
+          pubKeyPromise = crypto.subtle.importKey(
+            "jwk",
+            PUB_JWK,
+            { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+            false,
+            ["verify"]
+          );
+        }
+        return pubKeyPromise;
+      }
+
+      async function verifyV3Signature(bodyBytes, sigBytes) {
+        const domain = new TextEncoder().encode("Gatehouse-Update-V3");
+        const payload = new Uint8Array(domain.length + 1 + bodyBytes.length);
+        payload.set(domain, 0);
+        payload[domain.length] = 0;
+        payload.set(bodyBytes, domain.length + 1);
+        const key = await getPublicKey();
+        return crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, sigBytes.slice(), payload);
+      }
+
+      async function inflateRaw(compressedBytes) {
+        const ds = new DecompressionStream("deflate-raw");
+        const readPromise = new Response(ds.readable).arrayBuffer();
+        const writer = ds.writable.getWriter();
+        await writer.write(compressedBytes.slice());
+        await writer.close();
+        return new Uint8Array(await readPromise);
+      }
+
+      async function extractZip(zipBytes) {
+        const view = new DataView(zipBytes.buffer, zipBytes.byteOffset, zipBytes.byteLength);
+        const minEocd = Math.max(0, zipBytes.length - 65557);
+        let eocd = -1;
+        for (let i = zipBytes.length - 22; i >= minEocd; i--) {
+          if (view.getUint32(i, true) === 0x06054b50) {
+            eocd = i;
+            break;
+          }
+        }
+        if (eocd < 0) throw new Error("Invalid ZIP archive (missing EOCD).");
+
+        const entryCount = view.getUint16(eocd + 10, true);
+        const cdOffset = view.getUint32(eocd + 16, true);
+        if (entryCount < 1 || entryCount > MAX_MEMBERS) {
+          throw new Error("ZIP member count outside allowed limit.");
+        }
+
+        const decoder = new TextDecoder("utf-8", { fatal: true });
+        const files = new Map();
+        let offset = cdOffset;
+        let totalExpanded = 0;
+
+        for (let i = 0; i < entryCount; i++) {
+          if (view.getUint32(offset, true) !== 0x02014b50) {
+            throw new Error("Corrupt ZIP central directory.");
+          }
+          const flags = view.getUint16(offset + 8, true);
+          const method = view.getUint16(offset + 10, true);
+          const compSize = view.getUint32(offset + 20, true);
+          const uncompSize = view.getUint32(offset + 24, true);
+          const nameLen = view.getUint16(offset + 28, true);
+          const extraLen = view.getUint16(offset + 30, true);
+          const commentLen = view.getUint16(offset + 32, true);
+          const localOffset = view.getUint32(offset + 42, true);
+
+          if ((flags & 1) !== 0) throw new Error("Encrypted ZIP entries are not permitted.");
+
+          const name = decoder.decode(zipBytes.subarray(offset + 46, offset + 46 + nameLen));
+          offset += 46 + nameLen + extraLen + commentLen;
+
+          if (name.endsWith("/") || name.includes("\\") || name.includes("..") || !name.startsWith(PREFIX)) {
+            throw new Error("Rejected unsafe ZIP member path: " + name);
+          }
+          if (files.has(name)) throw new Error("Duplicate ZIP member: " + name);
+
+          totalExpanded += uncompSize;
+          if (totalExpanded > MAX_BYTES) throw new Error("Expanded ZIP exceeds 16 MiB limit.");
+
+          if (view.getUint32(localOffset, true) !== 0x04034b50) {
+            throw new Error("Corrupt ZIP local file header.");
+          }
+          const lhNameLen = view.getUint16(localOffset + 26, true);
+          const lhExtraLen = view.getUint16(localOffset + 28, true);
+          const dataStart = localOffset + 30 + lhNameLen + lhExtraLen;
+          const compressed = zipBytes.subarray(dataStart, dataStart + compSize);
+
+          let raw;
+          if (method === 0) {
+            raw = compressed.slice();
+          } else if (method === 8) {
+            raw = await inflateRaw(compressed);
+          } else {
+            throw new Error("Unsupported ZIP compression method: " + method);
+          }
+
+          if (raw.byteLength !== uncompSize) {
+            throw new Error("Decompressed size mismatch for " + name);
+          }
+          files.set(name, raw);
+        }
+        return files;
+      }
+
+      async function resolveGameDir(handle) {
+        try {
+          return await handle.getDirectoryHandle("Gatehouse_4.6.1");
+        } catch (_) {}
+        try {
+          await handle.getFileHandle("index.html");
+          return handle;
+        } catch (_) {}
+        try {
+          await handle.getDirectoryHandle("Study_Music");
+          return handle;
+        } catch (_) {}
+        throw new Error("Please select your Gatehouse_4.6.1 folder (or the folder directly containing Gatehouse_4.6.1).");
+      }
+
+      async function readState(gameDir) {
+        try {
+          const fh = await gameDir.getFileHandle(STATE_FILE);
+          const text = await (await fh.getFile()).text();
+          const data = JSON.parse(text);
+          if (Number.isInteger(data.sequence) && data.sequence >= 1 && /^[a-f0-9]{64}$/.test(data.previous)) {
+            return { sequence: data.sequence, previous: data.previous };
+          }
+        } catch (_) {}
+        return { sequence: 1, previous: BASE_HASH };
+      }
+
+      async function writeState(gameDir, state) {
+        const fh = await gameDir.getFileHandle(STATE_FILE, { create: true });
+        const writable = await fh.createWritable();
+        await writable.write(JSON.stringify({
+          sequence: state.sequence,
+          previous: state.previous,
+          updatedAt: new Date().toISOString()
+        }, null, 2));
+        await writable.close();
+      }
+
+      async function readRelativeFile(gameDir, relPath) {
+        const parts = relPath.split("/");
+        let dir = gameDir;
+        for (let i = 0; i < parts.length - 1; i++) {
+          dir = await dir.getDirectoryHandle(parts[i]);
+        }
+        const fh = await dir.getFileHandle(parts[parts.length - 1]);
+        return new Uint8Array(await (await fh.getFile()).arrayBuffer());
+      }
+
+      async function writeRelativeFile(gameDir, relPath, bytes) {
+        const parts = relPath.split("/");
+        let dir = gameDir;
+        for (let i = 0; i < parts.length - 1; i++) {
+          dir = await dir.getDirectoryHandle(parts[i], { create: true });
+        }
+        const fh = await dir.getFileHandle(parts[parts.length - 1], { create: true });
+        const writable = await fh.createWritable();
+        await writable.write(bytes);
+        await writable.close();
+      }
+
+      async function ensureReadWrite(handle) {
+        if (await handle.queryPermission({ mode: "readwrite" }) === "granted") return true;
+        return (await handle.requestPermission({ mode: "readwrite" })) === "granted";
+      }
+
+      async function runUpdate(handle) {
+        el.updateBtn.disabled = true;
+        el.pickBtn.disabled = true;
+        resetLog("Requesting folder permission...");
+
+        try {
+          const ok = await ensureReadWrite(handle);
+          if (!ok) {
+            setStatus("Folder write permission was declined. Click Check & Apply Updates to try again.", "warn");
+            addLog("Permission denied by user.");
+            return;
+          }
+
+          const gameDir = await resolveGameDir(handle);
+          el.folderVal.textContent = gameDir.name;
+          if (gameDir !== handle) {
+            savedHandle = gameDir;
+            await saveHandle(gameDir);
+          }
+
+          let state = await readState(gameDir);
+          el.seqVal.textContent = "Sequence " + state.sequence;
+          addLog("Current local state: Sequence " + state.sequence);
+
+          let appliedCount = 0;
+
+          while (true) {
+            const nextSeq = state.sequence + 1;
+            const manifestUrl = FEED_ORIGIN + "/updates/v3/releases/" + nextSeq + ".json";
+            setStatus("Checking for Sequence " + nextSeq + "...", "");
+            addLog("Fetching " + manifestUrl);
+
+            const mResp = await fetch(manifestUrl, { cache: "no-store" });
+            if (mResp.status === 404) {
+              if (appliedCount === 0) {
+                setStatus("Gatehouse is already up to date (Sequence " + state.sequence + ").", "ok");
+                addLog("No newer release published after Sequence " + state.sequence + ".");
+              } else {
+                setStatus("Update complete! Gatehouse is now on Sequence " + state.sequence + ". You can close this tab and play.", "ok");
+                addLog("Applied " + appliedCount + " update(s). Latest installed: Sequence " + state.sequence + ".");
+              }
+              break;
+            }
+            if (!mResp.ok) {
+              throw new Error("Feed returned HTTP " + mResp.status + " for Sequence " + nextSeq);
+            }
+
+            const env = await mResp.json();
+            if (!env || typeof env.body !== "string" || typeof env.signature !== "string") {
+              throw new Error("Malformed signed envelope.");
+            }
+
+            const bodyBytes = b64ToBytes(env.body);
+            const sigBytes = b64ToBytes(env.signature);
+            const sigValid = await verifyV3Signature(bodyBytes, sigBytes);
+            if (!sigValid) {
+              throw new Error("RSA signature verification failed for Sequence " + nextSeq + ".");
+            }
+            addLog("Signature verified for Sequence " + nextSeq + ".");
+
+            const body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bodyBytes));
+            if (
+              body.version !== 3 ||
+              body.product !== "gatehouse-462-desktop" ||
+              body.channel !== "private-class-production" ||
+              body.kind !== "signed-member-delta" ||
+              body.base !== BASE_HASH ||
+              body.previous !== state.previous ||
+              body.sequence !== nextSeq
+            ) {
+              throw new Error("Release metadata mismatch for Sequence " + nextSeq + ".");
+            }
+
+            const expectedPkgPath = "/updates/v3/packages/" + nextSeq + "-" + body.package.sha256 + ".zip";
+            if (
+              body.package.path !== expectedPkgPath ||
+              body.package.size < 22 ||
+              body.package.size > MAX_BYTES
+            ) {
+              throw new Error("Invalid package descriptor in Sequence " + nextSeq + ".");
+            }
+
+            const pkgUrl = FEED_ORIGIN + body.package.path;
+            setStatus("Downloading Sequence " + nextSeq + " (" + Math.ceil(body.package.size / 1024) + " KB)...", "");
+            addLog("Downloading " + pkgUrl);
+
+            const pResp = await fetch(pkgUrl, { cache: "no-store" });
+            if (!pResp.ok) throw new Error("Package download failed with HTTP " + pResp.status);
+
+            const zipBytes = new Uint8Array(await pResp.arrayBuffer());
+            if (zipBytes.byteLength !== body.package.size) {
+              throw new Error("Downloaded ZIP byte length mismatch.");
+            }
+            const actualZipSha = await sha256Hex(zipBytes);
+            if (actualZipSha !== body.package.sha256) {
+              throw new Error("Downloaded ZIP SHA-256 mismatch.");
+            }
+            addLog("Package hash verified. Extracting in memory...");
+
+            const extracted = await extractZip(zipBytes);
+            if (extracted.size !== body.members.length) {
+              throw new Error("ZIP member count does not match signed manifest.");
+            }
+
+            // Verify every member hash and predecessor hash before writing a single file
+            const stagedWrites = [];
+            for (const m of body.members) {
+              const raw = extracted.get(m.path);
+              if (!raw) throw new Error("Signed member missing from ZIP: " + m.path);
+              if (raw.byteLength !== m.bytes) throw new Error("Member size mismatch: " + m.path);
+              const afterHash = await sha256Hex(raw);
+              if (afterHash !== m.afterSha256) throw new Error("Member SHA-256 mismatch: " + m.path);
+
+              const relPath = m.path.slice(PREFIX.length);
+              if (m.beforeSha256 === null) {
+                if (!APPROVED_AUDIO.test(relPath)) {
+                  throw new Error("New file addition not permitted outside Study_Music/audio/*.mp3: " + relPath);
+                }
+                let existing = null;
+                try { existing = await readRelativeFile(gameDir, relPath); } catch (_) {}
+                if (existing) {
+                  const curHash = await sha256Hex(existing);
+                  if (curHash !== m.afterSha256) {
+                    throw new Error("File already exists with unexpected content: " + relPath);
+                  }
+                }
+              } else {
+                let existing;
+                try {
+                  existing = await readRelativeFile(gameDir, relPath);
+                } catch (_) {
+                  throw new Error("Required predecessor file missing on disk: " + relPath);
+                }
+                const curHash = await sha256Hex(existing);
+                if (curHash !== m.beforeSha256 && curHash !== m.afterSha256) {
+                  throw new Error("Predecessor hash mismatch on disk for " + relPath);
+                }
+              }
+              stagedWrites.push({ relPath, raw });
+            }
+
+            setStatus("Patching " + stagedWrites.length + " file(s) for Sequence " + nextSeq + "...", "");
+            for (const item of stagedWrites) {
+              await writeRelativeFile(gameDir, item.relPath, item.raw);
+              addLog("Patched: " + item.relPath);
+            }
+
+            const nextPrevious = await sha256Hex(bodyBytes);
+            state = { sequence: nextSeq, previous: nextPrevious };
+            await writeState(gameDir, state);
+            el.seqVal.textContent = "Sequence " + state.sequence;
+            appliedCount++;
+          }
+        } catch (err) {
+          setStatus("Update stopped: " + (err && err.message ? err.message : String(err)), "err");
+          addLog("ERROR: " + (err && err.message ? err.message : String(err)));
+        } finally {
+          el.pickBtn.disabled = false;
+          el.updateBtn.disabled = !savedHandle;
+        }
+      }
+
+      async function pickFolder() {
+        try {
+          const handle = await window.showDirectoryPicker({ id: "gatehouse-game-dir", mode: "readwrite" });
+          const gameDir = await resolveGameDir(handle);
+          savedHandle = gameDir;
+          await saveHandle(gameDir);
+          el.folderVal.textContent = gameDir.name;
+          el.updateBtn.disabled = false;
+          await runUpdate(gameDir);
+        } catch (err) {
+          if (err && err.name === "AbortError") return;
+          setStatus(err && err.message ? err.message : String(err), "err");
+          addLog("Folder selection error: " + (err && err.message ? err.message : String(err)));
+        }
+      }
+
+      async function init() {
+        if (!("showDirectoryPicker" in window)) {
+          el.browserWarn.style.display = "block";
+          el.pickBtn.disabled = true;
+          el.updateBtn.disabled = true;
+          setStatus("This browser cannot write updates directly to a local folder. Open this page in Chrome or Edge.", "warn");
+          el.copyBtn.addEventListener("click", async () => {
+            await navigator.clipboard.writeText(window.location.href);
+            el.copyBtn.textContent = "Copied!";
+            setTimeout(() => { el.copyBtn.textContent = "Copy Updater Link"; }, 1800);
+          });
+          return;
+        }
+
+        el.pickBtn.addEventListener("click", pickFolder);
+        el.updateBtn.addEventListener("click", () => savedHandle && runUpdate(savedHandle));
+
+        try {
+          const handle = await loadHandle();
+          if (handle) {
+            savedHandle = handle;
+            el.folderVal.textContent = handle.name + " (remembered)";
+            el.updateBtn.disabled = false;
+            setStatus("Saved folder ready. Click Check & Apply Updates to check for new Gatehouse releases.", "");
+          }
+        } catch (_) {}
+      }
+
+      init();
+    })();
+  </script>
+</body>
+</html>
