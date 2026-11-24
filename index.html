@@ -100,6 +100,39 @@
       overflow: auto;
       white-space: pre-wrap;
     }
+    details.icon-card {
+      margin-top: 16px;
+      padding: 12px 14px;
+      border: 1px solid rgba(147, 232, 255, 0.28);
+      border-radius: 10px;
+      background: rgba(6, 22, 38, 0.55);
+    }
+    details.icon-card.ready {
+      border-color: #6ee7b7;
+      box-shadow: 0 0 0 2px rgba(110, 231, 183, 0.16);
+    }
+    details.icon-card summary {
+      cursor: pointer;
+      font-weight: 600;
+      list-style: none;
+    }
+    details.icon-card summary::-webkit-details-marker { display: none; }
+    details.icon-card p { margin: 8px 0; font-size: 13px; line-height: 1.45; opacity: 0.92; }
+    #iconCmd {
+      margin: 10px 0;
+      padding: 10px;
+      max-height: 110px;
+      overflow: auto;
+      font-size: 11px;
+      line-height: 1.35;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.35);
+      user-select: all;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .icon-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    #copyIconMsg { font-size: 12px; opacity: 0.88; }
   </style>
 </head>
 <body>
@@ -125,6 +158,116 @@
     </div>
 
     <pre id="log">Ready.</pre>
+
+    <details id="iconCard" class="icon-card">
+      <summary>Create Mac Desktop Icon (Optional)</summary>
+      <p><strong>1.</strong> Click <strong>Copy Icon Setup Command</strong>. <strong>2.</strong> Press <code>Cmd + Space</code>, type <code>Terminal</code>, and press <strong>Enter</strong>. <strong>3.</strong> Paste (<code>Cmd + V</code>) and press <strong>Enter</strong>. Your Mac compiles <code>Gatehouse.app</code> on your Desktop with the Gatehouse icon wired to Chrome/Edge.</p>
+      <pre id="iconCmd">/bin/bash &lt;&lt;'GATEHOUSE_INSTALL'
+set -euo pipefail
+desktop="$HOME/Desktop"
+destination="$desktop/Gatehouse.app"
+occupied() { [[ -e "$destination" || -L "$destination" ]]; }
+existing() { printf '%s\n' 'Gatehouse.app already exists. Rename or move it first. Nothing was overwritten.' &gt;&amp;2; }
+if occupied; then existing; exit 1; fi
+
+if ! choice="$(/usr/bin/osascript &lt;&lt;'GATEHOUSE_PICK'
+try
+    return POSIX path of (choose folder with prompt "Select Gatehouse_4.6.1 or its parent folder.")
+on error errText number errNumber
+    if errNumber is -128 then return ""
+    error errText number errNumber
+end try
+GATEHOUSE_PICK
+)"; then
+  printf '%s\n' 'The macOS folder picker could not open. Nothing was written.' &gt;&amp;2
+  exit 1
+fi
+if [[ -z "$choice" ]]; then printf '%s\n' 'Canceled. Nothing was written.'; exit 0; fi
+choice="${choice%/}"
+if [[ "${choice##*/}" == Gatehouse_4.6.1 &amp;&amp; -f "$choice/index.html" ]]; then
+  entry="$choice/index.html"
+elif [[ -f "$choice/Gatehouse_4.6.1/index.html" ]]; then
+  entry="$choice/Gatehouse_4.6.1/index.html"
+else
+  printf '%s\n' 'The selected location does not contain Gatehouse_4.6.1/index.html. Nothing was written.' &gt;&amp;2
+  exit 1
+fi
+if occupied; then existing; exit 1; fi
+if ! /usr/bin/ruby -rfiddle -e 'Fiddle::Handle::DEFAULT["renamex_np"]'; then
+  printf '%s\n' 'Atomic no-overwrite installation is unavailable. Nothing was written.' &gt;&amp;2
+  exit 1
+fi
+
+# Build outside Desktop; exclusive rename fails safely if Desktop is on a different volume.
+if ! scratch="$(/usr/bin/mktemp -d "$HOME/.gatehouse-build.XXXXXXXX")"; then
+  printf '%s\n' 'Cannot create a temporary build folder in your home directory. Check your Mac permissions or contact your administrator.' &gt;&amp;2
+  exit 1
+fi
+cleanup() {
+  case "$scratch" in "$HOME"/.gatehouse-build.????????) /bin/rm -rf -- "$scratch" ;; esac
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'printf "%s\n" "Gatehouse setup failed. No existing launcher was replaced." &gt;&amp;2' ERR
+app="$scratch/Gatehouse.app"
+/bin/cat &gt; "$scratch/launcher.applescript" &lt;&lt;'GATEHOUSE_APPLESCRIPT'
+on run
+    set entryPath to do shell script "/bin/cat " &amp; quoted form of (POSIX path of (path to resource "gatehouse-index-path")) without altering line endings
+    set quotedPath to quoted form of entryPath
+    try
+        do shell script "/usr/bin/test -f " &amp; quotedPath
+    on error
+        display dialog "Gatehouse could not locate its index.html. If you moved your game folder, recreate this launcher using the updater." buttons {"OK"} default button "OK"
+        return
+    end try
+    try
+        do shell script "if /usr/bin/open -b com.google.Chrome " &amp; quotedPath &amp; " 2&gt;/dev/null; then :; elif /usr/bin/open -b com.microsoft.edgemac " &amp; quotedPath &amp; " 2&gt;/dev/null; then :; else /usr/bin/open " &amp; quotedPath &amp; "; fi"
+    on error
+        display dialog "Gatehouse could not open your browser. Check your browser installation or contact your Mac administrator." buttons {"OK"} default button "OK"
+    end try
+end run
+GATEHOUSE_APPLESCRIPT
+/usr/bin/osacompile -o "$app" "$scratch/launcher.applescript"
+resources="$app/Contents/Resources"
+/usr/bin/test -d "$resources"
+/usr/bin/printf '%s' "$entry" &gt; "$resources/gatehouse-index-path"
+/usr/bin/curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 45 \
+  'https://ygomez-lgtm.github.io/gatehouse-mac/Gatehouse-Icon-256.png' -o "$scratch/icon.png"
+/bin/mkdir "$scratch/Gatehouse.iconset"
+for size in 16 32 128 256 512; do
+  /usr/bin/sips -s format png -z "$size" "$size" "$scratch/icon.png" --out "$scratch/Gatehouse.iconset/icon_${size}x${size}.png" &gt;/dev/null
+  double=$((size * 2))
+  /usr/bin/sips -s format png -z "$double" "$double" "$scratch/icon.png" --out "$scratch/Gatehouse.iconset/icon_${size}x${size}@2x.png" &gt;/dev/null
+done
+/usr/bin/iconutil -c icns "$scratch/Gatehouse.iconset" -o "$resources/applet.icns"
+/usr/bin/plutil -lint "$app/Contents/Info.plist" &gt;/dev/null
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$app/Contents/Info.plist")" == applet.icns || "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$app/Contents/Info.plist")" == applet ]]
+[[ -x "$app/Contents/MacOS/applet" &amp;&amp; -s "$resources/Scripts/main.scpt" &amp;&amp; -s "$resources/gatehouse-index-path" &amp;&amp; -s "$resources/applet.icns" ]]
+/usr/bin/iconutil -c iconset "$resources/applet.icns" -o "$scratch/Verified.iconset"
+[[ -s "$scratch/Verified.iconset/icon_256x256.png" ]]
+/usr/bin/codesign --force --sign - "$app"
+/usr/bin/codesign --verify --strict "$app"
+if ! /usr/bin/ruby -rfiddle -e '
+  rename = Fiddle::Function.new(Fiddle::Handle::DEFAULT["renamex_np"],
+    [Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT], Fiddle::TYPE_INT)
+  result = rename.call(ARGV.fetch(0), ARGV.fetch(1), 4) # RENAME_EXCL
+  if result != 0
+    warn SystemCallError.new("Unable to install Gatehouse.app", Fiddle.last_error).message
+    exit 1
+  end
+' -- "$app" "$destination"; then
+  if occupied; then existing; fi
+  exit 1
+fi
+printf 'Created %s\n' "$destination"
+GATEHOUSE_INSTALL</pre>
+      <div class="icon-actions">
+        <button id="copyIconBtn" type="button">Copy Icon Setup Command</button>
+        <span id="copyIconMsg"></span>
+      </div>
+      <p style="opacity:0.78;">No-Terminal fallback: in Finder, right-click <code>Gatehouse_4.6.1/index.html</code> &rarr; <strong>Make Alias</strong> &rarr; drag to Desktop or Dock.</p>
+    </details>
   </main>
 
   <script>
@@ -365,7 +508,10 @@
         await writable.close();
         const seqFh = await gameDir.getFileHandle(SEQ_JS_FILE, { create: true });
         const seqWritable = await seqFh.createWritable();
-        await seqWritable.write("window.GATEHOUSE_INSTALLED_SEQ = " + state.sequence + ";\n");
+        await seqWritable.write(
+          "window.GATEHOUSE_INSTALLED_SEQ = " + state.sequence + ";\n" +
+          "window.GATEHOUSE_INSTALLED_HASH = " + JSON.stringify(state.previous) + ";\n"
+        );
         await seqWritable.close();
       }
 
@@ -546,6 +692,8 @@
             const nextPrevious = await sha256Hex(bodyBytes);
             state = { sequence: nextSeq, previous: nextPrevious };
             await writeState(gameDir, state);
+            const iconCard = document.getElementById("iconCard");
+            if (iconCard) { iconCard.open = true; iconCard.classList.add("ready"); }
             el.seqVal.textContent = "Sequence " + state.sequence;
             appliedCount++;
           }
@@ -602,6 +750,26 @@
         } catch (_) {}
       }
 
+      const copyIconBtn = document.getElementById("copyIconBtn");
+      const copyIconMsg = document.getElementById("copyIconMsg");
+      const iconCmdEl   = document.getElementById("iconCmd");
+      if (copyIconBtn && iconCmdEl) {
+        copyIconBtn.addEventListener("click", async () => {
+          const cmd = iconCmdEl.textContent.trim();
+          try {
+            await navigator.clipboard.writeText(cmd);
+          } catch (_) {
+            const ta = document.createElement("textarea");
+            ta.value = cmd;
+            document.body.appendChild(ta);
+            ta.select();
+            const copied = document.execCommand("copy");
+            ta.remove();
+            if (!copied) { if (copyIconMsg) copyIconMsg.textContent = "Copy the command manually from the box above."; return; }
+          }
+          if (copyIconMsg) copyIconMsg.textContent = "Copied! Paste into Terminal and press Enter.";
+        });
+      }
       init();
     })();
   </script>
