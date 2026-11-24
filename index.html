@@ -134,6 +134,7 @@
       const FEED_ORIGIN = "https://ygomez-lgtm.github.io/gatehouse-feed";
       const BASE_HASH = "0e01a7b5f0d4187d86b16c202b8b56fc37d5fbced7cbf1997c92a44fc3d288cd";
       const STATE_FILE = ".gatehouse-mac-state.json";
+      const SEQ_JS_FILE = "gatehouse-seq.js";
       const PREFIX = "Gatehouse_4.6.1/";
       const MAX_BYTES = 16 * 1024 * 1024;
       const MAX_MEMBERS = 32;
@@ -362,6 +363,10 @@
           updatedAt: new Date().toISOString()
         }, null, 2));
         await writable.close();
+        const seqFh = await gameDir.getFileHandle(SEQ_JS_FILE, { create: true });
+        const seqWritable = await seqFh.createWritable();
+        await seqWritable.write("window.GATEHOUSE_INSTALLED_SEQ = " + state.sequence + ";\n");
+        await seqWritable.close();
       }
 
       async function readRelativeFile(gameDir, relPath) {
